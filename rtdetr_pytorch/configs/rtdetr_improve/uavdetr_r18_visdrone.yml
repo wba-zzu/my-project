@@ -1,0 +1,104 @@
+__include__: [
+  '../dataset/visdrone_detection.yml',
+  '../runtime.yml',
+  '../rtdetr/include/dataloader.yml',
+  '../rtdetr/include/optimizer.yml',
+  '../rtdetr/include/rtdetr_r18vd.yml',
+]
+
+output_dir: ./output/uavdetr_r18_visdrone
+
+# Keep the original RT-DETR wrapper and decoder.
+# Only the backbone outputs, HybridEncoder and Criterion are switched.
+RTDETR:
+  backbone: PResNet
+  encoder: UAVHybridEncoder
+  decoder: RTDETRTransformer
+  multi_scale: [480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800]
+
+# UAV-DETR MSFF-FE needs P2, so return P2/P3/P4/P5.
+PResNet:
+  depth: 18
+  variant: d
+  return_idx: [0, 1, 2, 3]
+  freeze_at: -1
+  freeze_norm: False
+  pretrained: True
+
+# UAV-DETR feature encoder port.
+UAVHybridEncoder:
+  in_channels: [64, 128, 256, 512]
+  feat_strides: [4, 8, 16, 32]
+
+  hidden_dim: 256
+  use_encoder_idx: [3]
+  num_encoder_layers: 1
+  nhead: 8
+  dim_feedforward: 1024
+  dropout: 0.0
+  enc_act: gelu
+  pe_temperature: 10000
+
+  expansion: 0.5
+  depth_mult: 1.0
+  act: silu
+
+  eval_spatial_size: [640, 640]
+
+  p2_focus_channels: 128
+  y4_channels: 128
+  mfff_expansion: 0.25
+  dysample_groups: 4
+  sac_groups: 2
+
+# Original RT-DETR R18 decoder/head/query selection remains unchanged.
+RTDETRTransformer:
+  feat_channels: [256, 256, 256]
+  feat_strides: [8, 16, 32]
+  hidden_dim: 256
+  num_levels: 3
+  num_queries: 300
+  num_decoder_layers: 3
+  num_denoising: 100
+  eval_idx: -1
+  eval_spatial_size: [640, 640]
+
+# UAV-DETR uses Inner-SIoU (ratio=1.25) for regression, while its
+# Hungarian matcher still uses the original GIoU cost.
+criterion: SetCriterionInnerSIoU
+
+SetCriterionInnerSIoU:
+  weight_dict: {loss_vfl: 1, loss_bbox: 5, loss_giou: 2}  # 为了匹配giou字段，把loss_inner_siou改为loss_giou
+  losses: ['vfl', 'boxes']
+  alpha: 0.75
+  gamma: 2.0
+  inner_iou_ratio: 1.25
+
+  matcher:
+    type: HungarianMatcher
+    weight_dict: {cost_class: 2, cost_bbox: 5, cost_giou: 2}
+    alpha: 0.25
+    gamma: 2.0
+
+# Same R18 optimizer grouping as the original RT-DETR config.
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?=.*norm).*$'
+      lr: 0.00001
+      weight_decay: 0.
+    -
+      params: '^(?=.*backbone)(?!.*norm).*$'
+      lr: 0.00001
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bias)).*$'
+      weight_decay: 0.
+  lr: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+# lr_scheduler:
+#   type: MultiStepLR
+#   milestones: [180]
+#   gamma: 0.1
